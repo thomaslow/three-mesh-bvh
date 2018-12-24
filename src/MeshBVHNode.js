@@ -7,6 +7,14 @@ const boundingBox = new THREE.Box3();
 const boxIntersection = new THREE.Vector3();
 const xyzFields = [ 'x', 'y', 'z' ];
 
+function boundsArrayIntersectRay( boundingData, ray ) {
+
+	arrayToBox( boundingData, boundingBox );
+
+	return ray.intersectBox( boundingBox, boxIntersection );
+
+}
+
 export default
 class MeshBVHNode {
 
@@ -17,20 +25,12 @@ class MeshBVHNode {
 
 	}
 
-	intersectRay( ray, target ) {
-
-		arrayToBox( this.boundingData, boundingBox );
-
-		return ray.intersectBox( boundingBox, target );
-
-	}
-
 	raycast( mesh, raycaster, ray, intersects ) {
 
 		if ( this.count ) intersectTris( mesh, mesh.geometry, raycaster, ray, this.offset, this.count, intersects );
 		else this.children.forEach( c => {
 
-			if ( c.intersectRay( ray, boxIntersection ) )
+			if ( boundsArrayIntersectRay( c.boundingData, ray ) )
 				c.raycast( mesh, raycaster, ray, intersects );
 
 		} );
@@ -68,7 +68,7 @@ class MeshBVHNode {
 
 			}
 
-			const c1Intersection = c1.intersectRay( ray, boxIntersection );
+			const c1Intersection = boundsArrayIntersectRay( c1.boundingData, ray );
 			const c1Result = c1Intersection ? c1.raycastFirst( mesh, raycaster, ray ) : null;
 
 			// if we got an intersection in the first node and it's closer than the second node's bounding
@@ -92,7 +92,7 @@ class MeshBVHNode {
 
 			// either there was no intersection in the first node, or there could still be a closer
 			// intersection in the second, so check the second node and then take the better of the two
-			const c2Intersection = c2.intersectRay( ray, boxIntersection );
+			const c2Intersection = boundsArrayIntersectRay( c2.boundingData, ray );
 			const c2Result = c2Intersection ? c2.raycastFirst( mesh, raycaster, ray ) : null;
 
 			if ( c1Result && c2Result ) {
