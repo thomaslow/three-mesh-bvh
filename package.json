@@ -14,7 +14,8 @@
   },
   "files": [
     "src/*",
-    "umd/*"
+    "umd/*",
+    "build/src/*"
   ],
   "repository": {
     "type": "git",
