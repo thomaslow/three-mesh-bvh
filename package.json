@@ -3,10 +3,11 @@
   "version": "0.0.2",
   "description": "A BVH implementation to speed up raycasting against three.js meshes.",
   "module": "src/index.js",
-  "main": "umd/index.js",
+  "main": "build/src/index.js",
   "scripts": {
     "start": "static-server",
-    "build": "rollup -c & parcel build ./example/boundsTree.html --out-dir ./example/bundle/ --public-url . --no-cache --no-source-maps --no-content-hash",
+    "prepare": "tsc -p .",
+    "build_old": "rollup -c & parcel build ./example/boundsTree.html --out-dir ./example/bundle/ --public-url . --no-cache --no-source-maps --no-content-hash",
     "test": "jest",
     "lint": "eslint ./src/*.js ./test/*.js",
     "benchmark": "node benchmark/index.js"
@@ -29,6 +30,7 @@
     "three": "^0.91.0"
   },
   "devDependencies": {
+    "typescript": "3.1.2",
     "@babel/core": "^7.2.2",
     "@babel/preset-env": "^7.2.3",
     "@babel/register": "^7.0.0",

@@ -1,0 +1,18 @@
+{
+    "compilerOptions": {
+        "outDir": "build",
+        "rootDir": ".",
+        "module": "commonjs",
+        "target": "es2017",
+        "allowJs": true,
+        "newLine": "LF",
+        "noImplicitAny": true,
+        "sourceMap": true,
+        "lib": [
+            "dom", "es2017"
+        ]
+    },
+    "include": [
+        "src/**/*.js"
+    ]
+}
