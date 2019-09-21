@@ -1,14 +1,26 @@
 import * as THREE from 'three';
 import MeshBVHNode from './MeshBVHNode.js';
 import BVHConstructionContext from './BVHConstructionContext.js';
-import { boundsToArray } from './BoundsUtilities.js';
+import { arrayToBox, boxToArray } from './Utils/ArrayBoxUtilities.js';
 import { CENTER } from './Constants.js';
 
-export default class MeshBVH extends MeshBVHNode {
+export default class MeshBVH {
 
 	constructor( geo, options = {} ) {
 
-		super();
+		if ( ! geo.isBufferGeometry ) {
+
+			throw new Error( 'MeshBVH: Only BufferGeometries are supported.' );
+
+		} else if ( geo.attributes.position.isInterleavedBufferAttribute ) {
+
+			throw new Error( 'MeshBVH: InterleavedBufferAttribute is not supported for the position attribute.' );
+
+		} else if ( geo.index && geo.index.isInterleavedBufferAttribute ) {
+
+			throw new Error( 'MeshBVH: InterleavedBufferAttribute is not supported for the index attribute.' );
+
+		}
 
 		// default options
 		options = Object.assign( {
@@ -21,15 +33,8 @@ export default class MeshBVH extends MeshBVHNode {
 		}, options );
 		options.strategy = Math.max( 0, Math.min( 2, options.strategy ) );
 
-		if ( geo.isBufferGeometry ) {
+		this._roots = this._buildTree( geo, options );
 
-			this._root = this._buildTree( geo, options );
-
-		} else {
-
-			throw new Error( 'MeshBVH: Only BufferGeometries are supported.' );
-
-		}
 
 	}
 
@@ -39,18 +44,58 @@ export default class MeshBVH extends MeshBVHNode {
 
 		if ( ! geo.index ) {
 
-			const triCount = geo.attributes.position.count / 3;
-			const indexCount = triCount * 3;
-			const index = new ( triCount > 65535 ? Uint32Array : Uint16Array )( indexCount );
+			const vertexCount = geo.attributes.position.count;
+			const index = new ( vertexCount > 65535 ? Uint32Array : Uint16Array )( vertexCount );
 			geo.setIndex( new THREE.BufferAttribute( index, 1 ) );
 
-			for ( let i = 0; i < indexCount; i ++ ) {
+			for ( let i = 0; i < vertexCount; i ++ ) {
 
 				index[ i ] = i;
 
 			}
 
 		}
+
+	}
+
+	// Computes the set of { offset, count } ranges which need independent BVH roots. Each
+	// region in the geometry index that belongs to a different set of material groups requires
+	// a separate BVH root, so that triangles indices belonging to one group never get swapped
+	// with triangle indices belongs to another group. For example, if the groups were like this:
+	//
+	// [-------------------------------------------------------------]
+	// |__________________|
+	//   g0 = [0, 20]  |______________________||_____________________|
+	//                      g1 = [16, 40]           g2 = [41, 60]
+	//
+	// we would need four BVH roots: [0, 15], [16, 20], [21, 40], [41, 60].
+	//
+	_getRootIndexRanges( geo ) {
+
+		if ( ! geo.groups || ! geo.groups.length ) {
+
+			return [ { offset: 0, count: geo.index.count / 3 } ];
+
+		}
+
+		const ranges = [];
+		const rangeBoundaries = new Set();
+		for ( const group of geo.groups ) {
+
+			rangeBoundaries.add( group.start );
+			rangeBoundaries.add( group.start + group.count );
+
+		}
+
+		// note that if you don't pass in a comparator, it sorts them lexicographically as strings :-(
+		const sortedBoundaries = Array.from( rangeBoundaries.values() ).sort( ( a, b ) => a - b );
+		for ( let i = 0; i < sortedBoundaries.length - 1; i ++ ) {
+
+			const start = sortedBoundaries[ i ], end = sortedBoundaries[ i + 1 ];
+			ranges.push( { offset: ( start / 3 ), count: ( end - start ) / 3 } );
+
+		}
+		return ranges;
 
 	}
 
@@ -120,9 +165,39 @@ export default class MeshBVH extends MeshBVHNode {
 
 		};
 
-		if ( ! geo.boundingBox ) geo.computeBoundingBox();
-		this.boundingData = boundsToArray( geo.boundingBox );
-		splitNode( this, 0, geo.index.count / 3 );
+		const roots = [];
+		const ranges = this._getRootIndexRanges( geo );
+
+		if ( ranges.length === 1 ) {
+
+			const root = new MeshBVHNode();
+			const range = ranges[ 0 ];
+
+			if ( geo.boundingBox != null ) {
+
+				root.boundingData = boxToArray( geo.boundingBox );
+
+			} else {
+
+				root.boundingData = ctx.getBounds( range.offset, range.count, new Float32Array( 6 ) );
+
+			}
+
+			splitNode( root, range.offset, range.count );
+			roots.push( root );
+
+		} else {
+
+			for ( let range of ranges ) {
+
+				const root = new MeshBVHNode();
+				root.boundingData = ctx.getBounds( range.offset, range.count, new Float32Array( 6 ) );
+				splitNode( root, range.offset, range.count );
+				roots.push( root );
+
+			}
+
+		}
 
 		if ( reachedMaxDepth && options.verbose ) {
 
@@ -131,7 +206,142 @@ export default class MeshBVH extends MeshBVHNode {
 
 		}
 
-		return this;
+		// if the geometry doesn't have a bounding box, then let's politely populate it using
+		// the work we did to determine the BVH root bounds
+
+		if ( geo.boundingBox == null ) {
+
+			const rootBox = new THREE.Box3();
+			geo.boundingBox = new THREE.Box3();
+
+			for ( let root of roots ) {
+
+				geo.boundingBox.union( arrayToBox( root.boundingData, rootBox ) );
+
+			}
+
+		}
+
+		return roots;
+
+	}
+
+	raycast( mesh, raycaster, ray, intersects ) {
+
+		for ( const root of this._roots ) {
+
+			root.raycast( mesh, raycaster, ray, intersects );
+
+		}
+
+	}
+
+	raycastFirst( mesh, raycaster, ray ) {
+
+		let closestResult = null;
+
+		for ( const root of this._roots ) {
+
+			const result = root.raycastFirst( mesh, raycaster, ray );
+			if ( result != null && ( closestResult == null || result.distance < closestResult.distance ) ) {
+
+				closestResult = result;
+
+			}
+
+		}
+
+		return closestResult;
+
+	}
+
+	intersectsGeometry( mesh, geometry, geomToMesh ) {
+
+		for ( const root of this._roots ) {
+
+			if ( root.intersectsGeometry( mesh, geometry, geomToMesh ) ) return true;
+
+		}
+
+		return false;
+
+	}
+
+	shapecast( mesh, intersectsBoundsFunc, intersectsTriangleFunc = null, orderNodesFunc = null ) {
+
+		for ( const root of this._roots ) {
+
+			if ( root.shapecast( mesh, intersectsBoundsFunc, intersectsTriangleFunc, orderNodesFunc ) ) return true;
+
+		}
+
+		return false;
+
+	}
+
+	intersectsBox( mesh, box, boxToMesh ) {
+
+		for ( const root of this._roots ) {
+
+			if ( root.intersectsBox( mesh, box, boxToMesh ) ) return true;
+
+		}
+
+		return false;
+
+	}
+
+	intersectsSphere( mesh, sphere ) {
+
+		for ( const root of this._roots ) {
+
+			if ( root.intersectsSphere( mesh, sphere ) ) return true;
+
+		}
+
+		return false;
+
+	}
+
+	closestPointToGeometry( mesh, geom, matrix, target1, target2, minThreshold, maxThreshold ) {
+
+		let closestDistance = Infinity;
+		for ( const root of this._roots ) {
+
+			const dist = root.closestPointToGeometry( mesh, geom, matrix, target1, target2, minThreshold, maxThreshold );
+			if ( dist < closestDistance ) closestDistance = dist;
+			if ( dist < minThreshold ) return dist;
+
+		}
+
+		return closestDistance;
+
+	}
+
+	distanceToGeometry( mesh, geom, matrix, minThreshold, maxThreshold ) {
+
+		return this.closestPointToGeometry( mesh, geom, matrix, null, null, minThreshold, maxThreshold );
+
+	}
+
+	closestPointToPoint( mesh, point, target, minThreshold, maxThreshold ) {
+
+		let closestDistance = Infinity;
+		for ( const root of this._roots ) {
+
+			const dist = root.closestPointToPoint( mesh, point, target, minThreshold, maxThreshold );
+			if ( dist < closestDistance ) closestDistance = dist;
+			if ( dist < minThreshold ) return dist;
+
+		}
+
+		return closestDistance;
+
+	}
+
+	distanceToPoint( mesh, point, minThreshold, maxThreshold ) {
+
+		return this.closestPointToPoint( mesh, point, null, minThreshold, maxThreshold );
 
 	}
 
